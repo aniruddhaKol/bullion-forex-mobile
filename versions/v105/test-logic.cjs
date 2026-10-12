@@ -1,0 +1,30 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const context=vm.createContext({Date,console});const logic=fs.readFileSync(__dirname+'/assets/logic.js','utf8');vm.runInContext(logic,context);
+const now=Date.parse('2026-10-09T08:00:00Z');
+const payload=(metal)=>({source:'IBJA',metal,purity:'999',unit:'INR per gram',rows:[{date:'2026-10-08',am:10,pm:12},{date:'2026-10-09',am:15,pm:null},{date:'2099-01-01',pm:999}]});
+const gold=payload('gold'),silver=payload('silver');const b=context.convertIndianBullion(gold,silver,now);
+assert.equal(b.gold,150);assert.equal(b.silver,1500);assert.equal(b.goldSession,'AM');
+gold.rows[1].pm=16;assert.equal(context.convertIndianBullion(gold,silver,now).gold,160);
+assert.equal(context.indianQuote({...gold,rows:[gold.rows[0]]},'gold',now).session,'PM');
+assert.throws(()=>context.indianQuote({...gold,unit:'INR per kg'},'gold',now));
+assert.throws(()=>context.indianQuote({...gold,source:'spot'},'gold',now));
+assert.throws(()=>context.indianQuote({...gold,rows:[{date:'2026-10-09',close:99,pm:null,am:null}]},'gold',now));
+assert.equal(context.validGroup({gold:100,silver:200,platinum:300},'bullion'),false);
+assert.equal(context.freshGroup({...b,bullionFetchedAt:now-3599999},'bullion',now),true);
+assert.equal(context.freshGroup({...b,bullionFetchedAt:now-3600000},'bullion',now),false);
+assert.equal(context.freshGroup({...b,bullionFetchedAt:now+1},'bullion',now),false);
+const liveGold=JSON.parse(fs.readFileSync(__dirname+'/fixtures/gold-live.json')),liveSilver=JSON.parse(fs.readFileSync(__dirname+'/fixtures/silver-live.json'));
+const live=context.convertIndianBullion(liveGold,liveSilver);assert.ok(live.gold>0&&live.silver>0);console.log('LIVE',live);
+const nodes=new Map();function node(id){if(!nodes.has(id))nodes.set(id,{textContent:'',clientWidth:400,style:{},classList:{add(){},remove(){}},querySelector(s){return node(id+s)},addEventListener(){}});return nodes.get(id)}
+const cached={...live,platinum:50000,usd:96,eur:108,gbp:127,fxDate:'2026-10-08',bullionFetchedAt:Date.now()-3600001,platinumFetchedAt:Date.now(),forexFetchedAt:Date.now()};
+const requests=[],toasts=[],storage=new Map([['rates-india-v3',JSON.stringify(cached)]]);
+const ui=vm.createContext({Date,console,Map,Number,Promise,setTimeout,clearTimeout,setInterval:()=>1,Image:class{},ResizeObserver:class{observe(){}},document:{getElementById:node,querySelectorAll:()=>[]},localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},AndroidRates:{toast(code){toasts.push(code)},fetch(id,url){requests.push(url);setTimeout(()=>ui.rateResponse(id,{body:url.includes('/gold/')?liveGold:liveSilver}),0)}}});ui.window=ui;
+vm.runInContext(logic+fs.readFileSync(__dirname+'/assets/app.js','utf8'),ui);
+setTimeout(async()=>{try{
+ assert.equal(requests.length,2);assert.ok(requests.every(url=>url.startsWith('https://trackliveprice.com/')));
+ const saved=JSON.parse(storage.get('rates-india-v3'));assert.equal(saved.forexFetchedAt,cached.forexFetchedAt);assert.equal(saved.platinum,cached.platinum);assert.equal(saved.gold,live.gold);
+ await vm.runInContext('refresh(true)',ui);assert.equal(toasts.at(-1),'cached');assert.equal(requests.length,2);
+ vm.runInContext('rates.bullionFetchedAt=Date.now()-3600001; AndroidRates.fetch=(id,url)=>setTimeout(()=>rateResponse(id,{error:"offline"}),0)',ui);
+ await vm.runInContext('refresh(true)',ui);assert.equal(toasts.at(-1),'loading_metals');assert.equal(vm.runInContext('rates.gold',ui),saved.gold);assert.ok(node('status').textContent.includes('saved'));
+ console.log('PASS: Indian units, latest session, PM handling, invalid-source migration, hourly expiry, independent fetches, toasts and offline preservation.');
+ }catch(error){console.error(error);process.exitCode=1}},100);
